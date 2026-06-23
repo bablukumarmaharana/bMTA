@@ -1,0 +1,10 @@
+RewriteEngine On
+
+# --- Tracking rules (before general routing) ---
+RewriteRule ^track/open/([a-f0-9]+)\.png$ track.php?type=open&id=$1 [L,QSA]
+RewriteRule ^track/click/([a-f0-9]+)$ track.php?type=click&id=$1 [L,QSA]
+
+# --- Route all other requests to front controller ---
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ index.php?url=$1 [QSA,L]
