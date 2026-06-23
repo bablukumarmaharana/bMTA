@@ -1,7 +1,7 @@
 SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
 START TRANSACTION;
 
-CREATE TABLE `users` (
+CREATE TABLE IF NOT EXISTS `users` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `email` varchar(255) NOT NULL,
   `password` varchar(255) NOT NULL,
@@ -14,7 +14,7 @@ CREATE TABLE `users` (
   UNIQUE KEY `email` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `domains` (
+CREATE TABLE IF NOT EXISTS `domains` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `user_id` int(11) NOT NULL,
   `domain` varchar(255) NOT NULL,
@@ -32,7 +32,7 @@ CREATE TABLE `domains` (
   CONSTRAINT `domains_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `bounce_servers` (
+CREATE TABLE IF NOT EXISTS `bounce_servers` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `user_id` int(11) NOT NULL,
   `name` varchar(255) NOT NULL,
@@ -47,7 +47,7 @@ CREATE TABLE `bounce_servers` (
   CONSTRAINT `bounce_servers_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `senders` (
+CREATE TABLE IF NOT EXISTS `senders` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `user_id` int(11) NOT NULL,
   `domain_id` int(11) NOT NULL,
@@ -68,7 +68,7 @@ CREATE TABLE `senders` (
   CONSTRAINT `senders_ibfk_3` FOREIGN KEY (`bounce_server_id`) REFERENCES `bounce_servers` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `sender_custom_headers` (
+CREATE TABLE IF NOT EXISTS `sender_custom_headers` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `sender_id` int(11) NOT NULL,
   `header_name` varchar(255) NOT NULL,
@@ -78,7 +78,7 @@ CREATE TABLE `sender_custom_headers` (
   CONSTRAINT `sender_headers_ibfk_1` FOREIGN KEY (`sender_id`) REFERENCES `senders` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `attachments` (
+CREATE TABLE IF NOT EXISTS `attachments` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `user_id` int(11) NOT NULL,
   `filename` varchar(255) NOT NULL,
@@ -91,7 +91,7 @@ CREATE TABLE `attachments` (
   CONSTRAINT `attachments_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `email_queue` (
+CREATE TABLE IF NOT EXISTS `email_queue` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT,
   `user_id` int(11) NOT NULL,
   `sender_id` int(11) NOT NULL,
@@ -114,7 +114,7 @@ CREATE TABLE `email_queue` (
   CONSTRAINT `email_queue_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `email_attachments` (
+CREATE TABLE IF NOT EXISTS `email_attachments` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `queue_id` bigint(20) NOT NULL,
   `attachment_id` int(11) NOT NULL,
@@ -125,7 +125,7 @@ CREATE TABLE `email_attachments` (
   CONSTRAINT `email_att_ibfk_2` FOREIGN KEY (`attachment_id`) REFERENCES `attachments` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `tracking_opens` (
+CREATE TABLE IF NOT EXISTS `tracking_opens` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT,
   `queue_id` bigint(20) NOT NULL,
   `recipient` varchar(255) NOT NULL,
@@ -136,7 +136,7 @@ CREATE TABLE `tracking_opens` (
   KEY `queue_id` (`queue_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `tracking_clicks` (
+CREATE TABLE IF NOT EXISTS `tracking_clicks` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT,
   `queue_id` bigint(20) NOT NULL,
   `recipient` varchar(255) NOT NULL,
@@ -148,7 +148,7 @@ CREATE TABLE `tracking_clicks` (
   KEY `queue_id` (`queue_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `suppression_list` (
+CREATE TABLE IF NOT EXISTS `suppression_list` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `recipient` varchar(255) NOT NULL,
   `reason` enum('bounce','complaint','manual') DEFAULT 'bounce',

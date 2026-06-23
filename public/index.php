@@ -1,8 +1,19 @@
 <?php
 session_start();
+
+// ================= AUTOLOADER =================
+spl_autoload_register(function ($class) {
+    $file = __DIR__ . '/../src/' . $class . '.php';
+    if (file_exists($file)) {
+        require_once $file;
+    }
+});
+
+// Manually load the first three (they are used immediately)
 require_once __DIR__ . '/../src/Database.php';
 require_once __DIR__ . '/../src/User.php';
 require_once __DIR__ . '/../src/Helpers.php';
+// ==============================================
 
 $config = require __DIR__ . '/../config/config.php';
 $db = new Database($config['db']);
@@ -19,10 +30,12 @@ $url = rtrim($url, '/');
 $method = $_SERVER['REQUEST_METHOD'];
 
 // Routes that require authentication
-$protected = ['dashboard','domains','senders','bounce-servers','compose','queue','users',
-              'logout','domain-save','domain-delete','sender-save','sender-delete',
-              'bounce-server-save','bounce-server-delete','queue-add','attachment-upload',
-              'header-save','header-delete'];
+$protected = [
+    'dashboard','domains','senders','bounce-servers','compose','queue','users',
+    'logout','domain-save','domain-delete','sender-save','sender-delete',
+    'bounce-server-save','bounce-server-delete','queue-add','attachment-upload',
+    'header-save','header-delete'
+];
 $adminOnly = ['users','user-save','user-delete'];
 
 if (in_array($url, $protected)) {
@@ -37,7 +50,7 @@ if (in_array($url, $protected)) {
     }
 }
 
-// CSRF protection for POST actions (simple token check)
+// CSRF protection for POST actions
 if ($method === 'POST' && in_array($url, $protected)) {
     $token = $_POST['csrf_token'] ?? '';
     if (!Helpers::verifyCsrf($token)) {
@@ -46,10 +59,10 @@ if ($method === 'POST' && in_array($url, $protected)) {
     }
 }
 
-// Routing
+// ---- ROUTING ----
 switch ($url) {
     case 'setup':
-        require __DIR__ . '/setup.php';
+        require __DIR__ . '/../templates/setup.php';
         break;
     case 'login':
         if ($method === 'POST') {
@@ -62,7 +75,15 @@ switch ($url) {
             exit;
         }
         require __DIR__ . '/../templates/login.php';
-        break;
+	break;
+    case 'domain-verify':
+    	$dm = new DomainManager($db);
+    	$domainId = (int)($_GET['id'] ?? 0);
+    	$result = $dm->verifyDnsRecords($domainId, $user->currentUserId());
+    	header('Content-Type: application/json');
+    	echo json_encode($result);
+    	exit;
+
     case 'logout':
         $user->logout();
         header('Location: login');
@@ -71,20 +92,13 @@ switch ($url) {
         require __DIR__ . '/../templates/dashboard.php';
         break;
     case 'domains':
-        if ($method === 'POST') {
-            // handled by domain-save
-            require __DIR__ . '/../templates/domains.php';
-        } else {
-            require __DIR__ . '/../templates/domains.php';
-        }
+        require __DIR__ . '/../templates/domains.php';
         break;
     case 'domain-save':
-        require_once __DIR__ . '/../src/DomainManager.php';
         $dm = new DomainManager($db);
         $dm->saveDomain($user->currentUserId());
         break;
     case 'domain-delete':
-        require_once __DIR__ . '/../src/DomainManager.php';
         $dm = new DomainManager($db);
         $dm->deleteDomain($user->currentUserId(), $_GET['id'] ?? 0);
         break;
@@ -92,22 +106,18 @@ switch ($url) {
         require __DIR__ . '/../templates/senders.php';
         break;
     case 'sender-save':
-        require_once __DIR__ . '/../src/SenderManager.php';
         $sm = new SenderManager($db);
         $sm->save($user->currentUserId());
         break;
     case 'sender-delete':
-        require_once __DIR__ . '/../src/SenderManager.php';
         $sm = new SenderManager($db);
         $sm->delete($user->currentUserId(), $_GET['id'] ?? 0);
         break;
     case 'header-save':
-        require_once __DIR__ . '/../src/SenderManager.php';
         $sm = new SenderManager($db);
         $sm->saveHeader($user->currentUserId());
         break;
     case 'header-delete':
-        require_once __DIR__ . '/../src/SenderManager.php';
         $sm = new SenderManager($db);
         $sm->deleteHeader($user->currentUserId(), $_GET['id'] ?? 0);
         break;
@@ -115,12 +125,10 @@ switch ($url) {
         require __DIR__ . '/../templates/bounce_servers.php';
         break;
     case 'bounce-server-save':
-        require_once __DIR__ . '/../src/BounceServerManager.php';
         $bsm = new BounceServerManager($db);
         $bsm->save($user->currentUserId());
         break;
     case 'bounce-server-delete':
-        require_once __DIR__ . '/../src/BounceServerManager.php';
         $bsm = new BounceServerManager($db);
         $bsm->delete($user->currentUserId(), $_GET['id'] ?? 0);
         break;
@@ -131,12 +139,10 @@ switch ($url) {
         require __DIR__ . '/../templates/queue.php';
         break;
     case 'queue-add':
-        require_once __DIR__ . '/../src/QueueManager.php';
         $qm = new QueueManager($db);
         $qm->addToQueue($user->currentUserId());
         break;
     case 'attachment-upload':
-        require_once __DIR__ . '/../src/QueueManager.php';
         $qm = new QueueManager($db);
         $qm->uploadAttachment($user->currentUserId());
         break;
@@ -144,14 +150,11 @@ switch ($url) {
         require __DIR__ . '/../templates/users.php';
         break;
     case 'user-save':
-        if ($method === 'POST') {
-            if ($user->currentUserRole() === 'admin') {
-                $user->create($_POST['email'], $_POST['password'], $_POST['name'], $_POST['role']);
-            }
-            header('Location: users');
-            exit;
+        if ($user->currentUserRole() === 'admin') {
+            $user->create($_POST['email'], $_POST['password'], $_POST['name'], $_POST['role']);
         }
-        break;
+        header('Location: users');
+        exit;
     case 'user-delete':
         if ($user->currentUserRole() === 'admin') {
             $user->delete($_GET['id'] ?? 0);

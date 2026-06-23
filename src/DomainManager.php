@@ -54,4 +54,80 @@ class DomainManager {
         header('Location: domains');
         exit;
     }
+    /**
+ * Verify DNS records for a domain.
+ * Returns an array of statuses: 'mx', 'spf', 'dkim', 'dmarc' => true/false
+ */
+public function verifyDnsRecords(int $domainId, int $userId): array {
+    $stmt = $this->db->getPdo()->prepare(
+        'SELECT * FROM domains WHERE id = ? AND user_id = ?'
+    );
+    $stmt->execute([$domainId, $userId]);
+    $domain = $stmt->fetch();
+    if (!$domain) {
+        return ['error' => 'Domain not found'];
+    }
+
+    $domainName = $domain['domain'];
+    $selector   = $domain['dkim_selector'];
+    $expectedSpf = $domain['spf_record'];
+    $expectedDmarc = $domain['dmarc_record'];
+    $expectedMxHost = $domain['mx_record'] ?: $domainName;
+
+    $results = [
+        'mx'    => false,
+        'spf'   => false,
+        'dkim'  => false,
+        'dmarc' => false,
+    ];
+
+    // Check MX (just that at least one MX record exists pointing to expected host)
+    $mxRecords = dns_get_record($domainName, DNS_MX);
+    if ($mxRecords) {
+        foreach ($mxRecords as $mx) {
+            if (strtolower($mx['target']) == strtolower($expectedMxHost)) {
+                $results['mx'] = true;
+                break;
+            }
+        }
+    }
+
+    // Check SPF
+    $txtRecords = dns_get_record($domainName, DNS_TXT);
+    foreach ($txtRecords as $txt) {
+        if (isset($txt['txt']) && strpos($txt['txt'], 'v=spf1') !== false) {
+            // Simple check: contains the expected SPF string
+            if (strpos($txt['txt'], $expectedSpf) !== false) {
+                $results['spf'] = true;
+            }
+            break;
+        }
+    }
+
+    // Check DKIM
+    $dkimHost = $selector . '._domainkey.' . $domainName;
+    $dkimRecords = @dns_get_record($dkimHost, DNS_TXT);
+    if ($dkimRecords) {
+        foreach ($dkimRecords as $r) {
+            if (isset($r['txt']) && strpos($r['txt'], 'v=DKIM1') !== false) {
+                $results['dkim'] = true;
+                break;
+            }
+        }
+    }
+
+    // Check DMARC
+    $dmarcHost = '_dmarc.' . $domainName;
+    $dmarcRecords = @dns_get_record($dmarcHost, DNS_TXT);
+    if ($dmarcRecords) {
+        foreach ($dmarcRecords as $r) {
+            if (isset($r['txt']) && strpos($r['txt'], 'v=DMARC1') !== false) {
+                $results['dmarc'] = true;
+                break;
+            }
+        }
+    }
+
+    return $results;
+}
 }
