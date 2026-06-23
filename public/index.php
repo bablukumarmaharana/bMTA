@@ -62,7 +62,7 @@ if ($method === 'POST' && in_array($url, $protected)) {
 // ---- ROUTING ----
 switch ($url) {
     case 'setup':
-        require __DIR__ . '/../templates/setup.php';
+        require __DIR__ . '/setup.php';
         break;
     case 'login':
         if ($method === 'POST') {
