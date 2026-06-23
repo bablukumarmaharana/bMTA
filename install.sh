@@ -104,9 +104,14 @@ echo -e "\n${GREEN}[3/8] Setting up database...${NC}"
 systemctl start mariadb
 systemctl enable mariadb
 
+# Escape single quotes for SQL (doubling them)
+DB_PASS_SQL=$(printf '%s\n' "$DB_PASS" | sed "s/'/''/g")
+
 mysql -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS_SQL}';"
 mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost'; FLUSH PRIVILEGES;"
+# Force password update even if user already existed (to sync with freshly generated config)
+mysql -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS_SQL}';"
 
 # Import schema (make it idempotent first)
 if [ -f /var/www/html/sql/schema.sql ]; then
@@ -237,7 +242,6 @@ cat > /etc/apache2/sites-available/000-default.conf <<'EOF'
 EOF
 
 # Set proper ownership and permissions
-
 chown -R www-data:www-data /var/www/html/
 mkdir -p /var/www/html/public/uploads
 chmod -R 755 /var/www/html/public/uploads
