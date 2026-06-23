@@ -148,7 +148,15 @@ switch ($url) {
         break;
     case 'users':
         require __DIR__ . '/../templates/users.php';
-        break;
+	break;
+    case 'sender-change-password':
+    	$sm = new SenderManager($db);
+    	$sm->changePassword($user->currentUserId());
+	break;
+    case 'sender-save':
+    	$sm = new SenderManager($db);
+    	$sm->save($user->currentUserId());
+    	break;
     case 'user-save':
         if ($user->currentUserRole() === 'admin') {
             $user->create($_POST['email'], $_POST['password'], $_POST['name'], $_POST['role']);
