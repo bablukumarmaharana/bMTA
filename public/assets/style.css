@@ -1,0 +1,5 @@
+body { background: #f8f9fa; }
+.navbar-brand { font-weight: bold; }
+.card { border-radius: 0.5rem; }
+.table td, .table th { vertical-align: middle; }
+.toast-container { z-index: 1055; }
