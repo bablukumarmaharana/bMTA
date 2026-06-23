@@ -1,4 +1,3 @@
-```markdown
 # 🚀 bMTA – Open Source Bulk Mail Transfer Agent
 
 bMTA is a **self-hosted, UI-driven bulk mailing platform** designed for high-volume email campaigns. It runs on a bare Linux server (no Docker) using Postfix, Dovecot, Apache, MySQL/MariaDB, and PHP. All management – domains, senders, bounce servers, DNS records, SMTP passwords – is done through a clean web dashboard.
