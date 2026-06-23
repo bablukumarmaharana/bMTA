@@ -53,8 +53,8 @@ CREATE TABLE `senders` (
   `domain_id` int(11) NOT NULL,
   `email` varchar(255) NOT NULL,
   `name` varchar(255) DEFAULT NULL,
-  `password` varchar(255) NOT NULL,         -- SMTP auth (bcrypt)
-  `bounce_email` varchar(255) DEFAULT NULL, -- return-path
+  `password` varchar(255) NOT NULL,
+  `bounce_email` varchar(255) DEFAULT NULL,
   `bounce_server_id` int(11) DEFAULT NULL,
   `active` tinyint(1) DEFAULT 1,
   `created_at` datetime DEFAULT current_timestamp(),
@@ -100,7 +100,7 @@ CREATE TABLE `email_queue` (
   `body_html` text DEFAULT NULL,
   `body_text` text DEFAULT NULL,
   `amp_html` text DEFAULT NULL,
-  `custom_headers` text DEFAULT NULL,     -- JSON: {"Header":"value",...}
+  `custom_headers` text DEFAULT NULL,
   `status` enum('pending','sending','sent','failed','bounced') DEFAULT 'pending',
   `message_id` varchar(255) DEFAULT NULL,
   `attempts` tinyint(4) DEFAULT 0,
