@@ -237,9 +237,10 @@ cat > /etc/apache2/sites-available/000-default.conf <<'EOF'
 EOF
 
 # Set proper ownership and permissions
+
 chown -R www-data:www-data /var/www/html/
-chmod -R 755 /var/www/html/public/uploads
 mkdir -p /var/www/html/public/uploads
+chmod -R 755 /var/www/html/public/uploads
 chown www-data:www-data /var/www/html/public/uploads
 chmod 775 /var/www/html/public/uploads
 
