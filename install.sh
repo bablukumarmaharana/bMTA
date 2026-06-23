@@ -61,7 +61,12 @@ echo -e "${YELLOW}Using PHP $PHP_VERSION${NC}"
 echo -e "\n${GREEN}[1/8] Installing system packages...${NC}"
 apt update -y
 apt upgrade -y
-apt install -y software-properties-common wget unzip acl
+apt install -y software-properties-common wget unzip acl dos2unix
+
+# Pre-seed Postfix to avoid interactive prompts
+SERVER_FQDN="$(hostname -f)"
+debconf-set-selections <<< "postfix postfix/mailname string $SERVER_FQDN"
+debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Internet Site'"
 
 # Add PHP repository if needed
 if [[ "$OS" == "ubuntu" ]]; then
@@ -103,8 +108,12 @@ mysql -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE
 mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
 mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost'; FLUSH PRIVILEGES;"
 
-# Import schema
+# Import schema (make it idempotent first)
 if [ -f /var/www/html/sql/schema.sql ]; then
+    # Fix potential CRLF issues in schema file
+    dos2unix /var/www/html/sql/schema.sql 2>/dev/null || true
+    # Replace CREATE TABLE with IF NOT EXISTS for re-runs
+    sed -i 's/CREATE TABLE `/CREATE TABLE IF NOT EXISTS `/g' /var/www/html/sql/schema.sql
     mysql ${DB_NAME} < /var/www/html/sql/schema.sql
 else
     echo -e "${RED}Schema file not found at /var/www/html/sql/schema.sql. Did you clone the repository?${NC}"
@@ -136,9 +145,20 @@ EOF
 
 # --- 5. Set up mail infrastructure ---
 echo -e "\n${GREEN}[5/8] Configuring Postfix...${NC}"
+
+# Check if required files exist
+for f in /var/www/html/postfix/main.cf.patch /var/www/html/postfix/mysql_virtual_domains.cf /var/www/html/postfix/mysql_virtual_mailbox_maps.cf /var/www/html/postfix/mysql_virtual_alias_maps.cf; do
+    if [ ! -f "$f" ]; then
+        echo -e "${RED}Missing Postfix configuration file: $f${NC}"
+        echo "Make sure the full repository is cloned (including postfix/ directory)."
+        exit 1
+    fi
+done
+
 cp /etc/postfix/main.cf /etc/postfix/main.cf.bak
 
-# Append custom configuration
+# Fix line endings and append custom configuration
+dos2unix /var/www/html/postfix/main.cf.patch 2>/dev/null || true
 cat /var/www/html/postfix/main.cf.patch >> /etc/postfix/main.cf
 
 # Copy MySQL lookup files
@@ -146,9 +166,12 @@ cp /var/www/html/postfix/mysql_virtual_domains.cf /etc/postfix/
 cp /var/www/html/postfix/mysql_virtual_mailbox_maps.cf /etc/postfix/
 cp /var/www/html/postfix/mysql_virtual_alias_maps.cf /etc/postfix/
 
-# Secure the MySQL password inside .cf files (replace placeholder if any)
+# Secure the MySQL password inside .cf files (handle special characters safely)
+# Escape the password for safe use in sed - we use '|' as delimiter and escape any '|' in the password
+DB_PASS_ESC=$(printf '%s\n' "$DB_PASS" | sed -e 's/[\|&]/\\&/g')
 for f in /etc/postfix/mysql_virtual_domains.cf /etc/postfix/mysql_virtual_mailbox_maps.cf /etc/postfix/mysql_virtual_alias_maps.cf; do
-    sed -i "s/password = .*/password = ${DB_PASS}/" "$f"
+    dos2unix "$f" 2>/dev/null || true
+    sed -i "s|password = .*|password = ${DB_PASS_ESC}|" "$f"
 done
 
 postmap /etc/postfix/mysql_virtual_domains.cf
@@ -163,14 +186,28 @@ chmod -R 770 /var/mail/vhosts
 
 systemctl restart postfix
 
+# --- 6. Configure Dovecot ---
 echo -e "\n${GREEN}[6/8] Configuring Dovecot...${NC}"
+
+# Check required files
+for f in /var/www/html/dovecot/dovecot.conf.patch /var/www/html/dovecot/conf.d/10-auth.conf /var/www/html/dovecot/conf.d/auth-sql.conf.ext /var/www/html/dovecot/dovecot-sql.conf.ext; do
+    if [ ! -f "$f" ]; then
+        echo -e "${RED}Missing Dovecot configuration file: $f${NC}"
+        echo "Make sure the full repository is cloned (including dovecot/ directory)."
+        exit 1
+    fi
+done
+
 cp /var/www/html/dovecot/dovecot.conf.patch /etc/dovecot/
 cp /var/www/html/dovecot/conf.d/10-auth.conf /etc/dovecot/conf.d/
 cp /var/www/html/dovecot/conf.d/auth-sql.conf.ext /etc/dovecot/conf.d/
 cp /var/www/html/dovecot/dovecot-sql.conf.ext /etc/dovecot/
 
-# Insert DB credentials into Dovecot SQL conf
-sed -i "s/connect = .*/connect = host=127.0.0.1 dbname=${DB_NAME} user=${DB_USER} password=${DB_PASS}/" /etc/dovecot/dovecot-sql.conf.ext
+# Fix line endings
+dos2unix /etc/dovecot/conf.d/10-auth.conf /etc/dovecot/conf.d/auth-sql.conf.ext /etc/dovecot/dovecot-sql.conf.ext 2>/dev/null || true
+
+# Insert DB credentials into Dovecot SQL conf (safe sed using |)
+sed -i "s|connect = .*|connect = host=127.0.0.1 dbname=${DB_NAME} user=${DB_USER} password=${DB_PASS_ESC}|" /etc/dovecot/dovecot-sql.conf.ext
 
 # Fix permissions
 chown -R vmail:dovecot /etc/dovecot
@@ -181,8 +218,9 @@ systemctl restart dovecot
 # --- 7. Configure Apache ---
 echo -e "\n${GREEN}[7/8] Configuring Apache...${NC}"
 a2enmod rewrite
+
 # Allow .htaccess overrides in default site
-cat > /etc/apache2/sites-available/000-default.conf <<EOF
+cat > /etc/apache2/sites-available/000-default.conf <<'EOF'
 <VirtualHost *:80>
     ServerAdmin webmaster@localhost
     DocumentRoot /var/www/html/public
@@ -193,8 +231,8 @@ cat > /etc/apache2/sites-available/000-default.conf <<EOF
         Require all granted
     </Directory>
 
-    ErrorLog \${APACHE_LOG_DIR}/error.log
-    CustomLog \${APACHE_LOG_DIR}/access.log combined
+    ErrorLog ${APACHE_LOG_DIR}/error.log
+    CustomLog ${APACHE_LOG_DIR}/access.log combined
 </VirtualHost>
 EOF
 
