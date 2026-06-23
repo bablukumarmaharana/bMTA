@@ -1,0 +1,5 @@
+user = bmta
+password = bmta_secret
+hosts = 127.0.0.1
+dbname = bmta
+query = SELECT 1 FROM senders WHERE email = '%s' AND active = 1

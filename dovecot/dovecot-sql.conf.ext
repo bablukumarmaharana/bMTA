@@ -1,0 +1,4 @@
+driver = mysql
+connect = host=127.0.0.1 dbname=bmta user=bmta password=bmta_secret
+password_query = SELECT email AS user, password FROM senders WHERE email = '%u' AND active = 1
+iterate_query = SELECT email AS user FROM senders WHERE active = 1

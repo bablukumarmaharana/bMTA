@@ -1,0 +1,13 @@
+# Virtual domains
+virtual_mailbox_domains = proxy:mysql:/etc/postfix/mysql_virtual_domains.cf
+virtual_mailbox_maps = proxy:mysql:/etc/postfix/mysql_virtual_mailbox_maps.cf
+virtual_alias_maps = proxy:mysql:/etc/postfix/mysql_virtual_alias_maps.cf
+
+# SMTP AUTH (Dovecot SASL)
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/auth
+smtpd_sasl_auth_enable = yes
+smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination
+
+# Local delivery for bounce mailbox (optional)
+mailbox_command = /usr/lib/dovecot/deliver

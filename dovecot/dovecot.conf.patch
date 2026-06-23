@@ -1,0 +1,6 @@
+# Add to /etc/dovecot/dovecot.conf
+!include conf.d/10-auth.conf
+mail_location = maildir:/var/mail/vhosts/%d/%n
+ssl = yes
+ssl_cert = </etc/ssl/certs/ssl-cert-snakeoil.pem
+ssl_key = </etc/ssl/private/ssl-cert-snakeoil.key
