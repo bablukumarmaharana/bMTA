@@ -4,7 +4,7 @@ return [
         'host'   => getenv('BMTA_DB_HOST') ?: 'localhost',
         'dbname' => getenv('BMTA_DB_NAME') ?: 'bmta',
         'user'   => getenv('BMTA_DB_USER') ?: 'bmta',
-        'pass'   => getenv('BMTA_DB_PASS') ?: 'bmta_secret',  // only fallback if not set
+        'pass'   => getenv('BMTA_DB_PASS') ?: '',
         'charset'=> 'utf8mb4',
     ],
     'app' => [
