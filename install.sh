@@ -1,9 +1,9 @@
 #!/bin/bash
 #=====================================================================
-# bMTA – Fully Automated Universal Installer (error‑collecting, firewall autoconfig)
+# bMTA – Fully Automated Universal Installer (self‑repairing, collects errors)
 # Run as root: sudo bash install.sh
 #=====================================================================
-set +e    # Continue even if individual commands fail
+set +e
 
 # ---------- colour helpers ----------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -133,6 +133,53 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  bMTA Universal Installer               ${NC}"
 echo -e "${GREEN}  Detected: $OS_PRETTY                    ${NC}"
 echo -e "${GREEN}========================================${NC}"
+
+# ---------- 0. Pre‑flight check & repair ----------
+echo -e "\n${GREEN}[0/9] Pre‑flight check...${NC}"
+# 0.1 Internet connectivity
+if ! ping -c 2 8.8.8.8 &>/dev/null; then
+    echo -e "${RED}No internet access. Please check your network.${NC}"
+    exit 1
+fi
+
+# 0.2 Test package manager with a tiny package
+echo -e "    Testing package manager..."
+if ! eval "$PKG_INSTALL dos2unix" &>/tmp/bmta_pkg_test.log; then
+    echo -e "${YELLOW}Package manager failed – attempting automatic repair...${NC}"
+    case "$OS_ID" in
+        kali)
+            echo "    Fixing Kali sources..."
+            cat > /etc/apt/sources.list <<'KALIEOF'
+deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
+deb-src http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
+KALIEOF
+            apt update -y && DEBIAN_FRONTEND=noninteractive apt install -y dos2unix || {
+                echo -e "${RED}Automatic repair failed. Please fix your package manager manually.${NC}"
+                exit 1
+            }
+            ;;
+        ubuntu|debian)
+            apt update --fix-missing -y && DEBIAN_FRONTEND=noninteractive apt install -y dos2unix || {
+                echo -e "${RED}Automatic repair failed. Check your /etc/apt/sources.list.${NC}"
+                exit 1
+            }
+            ;;
+        centos|rhel|rocky|almalinux|fedora)
+            dnf install -y epel-release && dnf update -y && dnf install -y dos2unix 2>/dev/null || {
+                # fallback to yum
+                yum install -y epel-release && yum update -y && yum install -y dos2unix || {
+                    echo -e "${RED}Automatic repair failed. Check your subscription/repos.${NC}"
+                    exit 1
+                }
+            }
+            ;;
+        *)
+            echo -e "${RED}Could not auto‑repair package manager. Please fix it manually.${NC}"
+            exit 1
+            ;;
+    esac
+    echo -e "    ${GREEN}Package manager is now functional.${NC}"
+fi
 
 # ---------- 1. Install system packages ----------
 echo -e "\n${GREEN}[1/9] Installing system packages...${NC}"
