@@ -1,6 +1,6 @@
 #!/bin/bash
 #=====================================================================
-# bMTA – Universal Installer (fixes: Alpine, Debian, Gentoo, SUSE)
+# bMTA – Universal Installer (latest PHP + latest MariaDB, Dovecot, etc.)
 # Run as root: sudo bash install.sh
 #=====================================================================
 set +e
@@ -153,7 +153,6 @@ if ! ping -c 2 8.8.8.8 &>/dev/null; then
     echo -e "${RED}No internet access.${NC}"; exit 1
 fi
 
-# 0.2 Test package manager (install dos2unix)
 echo "    Testing package manager..."
 case "$OS_ID" in
     alpine) $PKG_INSTALL dos2unix &>/dev/null || {
@@ -189,7 +188,24 @@ esac
 echo -e "\n${GREEN}[1/9] Installing system packages...${NC}"
 eval "$PKG_UPDATE" || add_error "System update failed"
 
-# Add PHP repos for Debian/Ubuntu
+# ---------- ADDITIONAL REPOS FOR LATEST VERSIONS ----------
+if command -v apt &>/dev/null; then
+    # --- MariaDB official repo (latest version) ---
+    if [ ! -f /etc/apt/sources.list.d/mariadb.list ]; then
+        curl -sS https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | bash -s -- --mariadb-server-version="mariadb-10.11" 2>/dev/null || add_error "MariaDB repo setup failed"
+    fi
+    # --- Dovecot community repo (latest) ---
+    if [ ! -f /etc/apt/sources.list.d/dovecot.list ]; then
+        echo "deb [arch=amd64] https://repo.dovecot.org/ce-2.3-latest/$(lsb_release -sc)/$(lsb_release -sc) main" > /etc/apt/sources.list.d/dovecot.list
+        apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 26FF2A43 2>/dev/null || true
+    fi
+    apt update -y || add_error "apt update after adding repos failed"
+elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
+    # RHEL already uses EPEL + Remi, which have latest MariaDB, Dovecot, etc.
+    :
+fi
+
+# PHP repos
 if command -v apt &>/dev/null; then
     if [[ "$OS_ID" == "ubuntu" ]]; then
         add-apt-repository -y ppa:ondrej/php || add_error "Failed to add PHP PPA"
@@ -200,30 +216,67 @@ fi
 # RHEL: EPEL + Remi + CRB
 if command -v dnf &>/dev/null || command -v yum &>/dev/null; then
     $PKG_INSTALL https://rpms.remirepo.net/enterprise/remi-release-${OS_VERSION}.rpm 2>/dev/null || true
+    $PKG_INSTALL epel-release 2>/dev/null || true
     if command -v dnf &>/dev/null; then
-        dnf module reset php -y 2>/dev/null || true
-        dnf module enable php:remi-8.2 -y 2>/dev/null || add_error "PHP 8.2 module enable failed"
         dnf config-manager --set-enabled crb 2>/dev/null || true
-        dnf install -y libmemcached libmemcached-devel 2>/dev/null || true   # opendkim dep
+        dnf install -y libmemcached libmemcached-devel 2>/dev/null || true
     fi
 fi
 
-# Determine PHP version
-php_ver=""
-for v in 8.3 8.2 8.1 8.0; do
-    if $PKG_INSTALL ${PHP_PREFIX}${v} 2>/dev/null; then php_ver="$v"; break; fi
-done
-[ -z "$php_ver" ] && $PKG_INSTALL ${PHP_PREFIX} && php_ver=""
+# ---------- DYNAMIC PHP VERSION DETECTION ----------
+detect_latest_php() {
+    if command -v apt &>/dev/null; then
+        apt-cache search --names-only '^php[0-9]+\.[0-9]+$' 2>/dev/null | \
+            sed -n 's/^php\([0-9.]*\) .*/\1/p' | sort -Vr | head -1
+    elif command -v dnf &>/dev/null; then
+        dnf module list php 2>/dev/null | grep -E '^php[0-9]' | awk '{print $1}' | sort -Vr | head -1 | cut -d'c' -f1
+    elif command -v yum &>/dev/null; then
+        yum module list php 2>/dev/null | grep -E '^php[0-9]' | awk '{print $1}' | sort -Vr | head -1 | cut -d'c' -f1
+    elif command -v zypper &>/dev/null; then
+        zypper search php 2>/dev/null | grep -oP '^php\d+' | sort -Vr | head -1 | sed 's/php//'
+    elif command -v pacman &>/dev/null; then
+        echo "latest"
+    elif command -v apk &>/dev/null; then
+        apk search php 2>/dev/null | grep -oP '^php\d+' | sort -Vr | head -1 | sed 's/php//'
+    elif command -v emerge &>/dev/null; then
+        equery list -po dev-lang/php 2>/dev/null | grep -oP '\d+\.\d+' | sort -Vr | head -1
+    else
+        echo ""
+    fi
+}
 
-# Install core packages per distribution
+php_ver=$(detect_latest_php)
+if [ -z "$php_ver" ]; then
+    $PKG_INSTALL ${PHP_PREFIX} 2>/dev/null && php_ver="latest"
+fi
+
+if [ "$php_ver" = "latest" ]; then
+    php_suffix=""
+else
+    php_suffix="$php_ver"
+fi
+
+echo -e "${YELLOW}Detected PHP version: $php_suffix${NC}"
+
+if command -v dnf &>/dev/null && [ -n "$php_suffix" ] && [ "$php_suffix" != "latest" ]; then
+    dnf module enable php:remi-${php_suffix} -y 2>/dev/null || add_error "Failed to enable PHP ${php_suffix} module"
+fi
+
+if [ -n "$php_suffix" ] && [ "$php_suffix" != "latest" ]; then
+    $PKG_INSTALL ${PHP_PREFIX}${php_suffix} || add_error "Failed to install PHP"
+else
+    $PKG_INSTALL ${PHP_PREFIX} || add_error "Failed to install PHP"
+fi
+
+# ---------- Install core packages per distribution ----------
 install_core() {
     case "$OS_ID" in
         ubuntu|debian|kali|devuan|pureos|turnkeylinux)
             $PKG_INSTALL apache2 mariadb-server mariadb-client \
-                php${php_ver} libapache2-mod-php${php_ver} \
-                php${php_ver}-mysql php${php_ver}-imap php${php_ver}-cli \
-                php${php_ver}-curl php${php_ver}-mbstring php${php_ver}-xml \
-                php${php_ver}-zip php${php_ver}-gd \
+                php${php_suffix} libapache2-mod-php${php_suffix} \
+                php${php_suffix}-mysql php${php_suffix}-imap php${php_suffix}-cli \
+                php${php_suffix}-curl php${php_suffix}-mbstring php${php_suffix}-xml \
+                php${php_suffix}-zip php${php_suffix}-gd \
                 postfix postfix-mysql dovecot-core dovecot-mysql dovecot-imapd dovecot-pop3d \
                 opendkim opendkim-tools
             ;;
@@ -234,7 +287,6 @@ install_core() {
                 opendkim opendkim-tools
             ;;
         opensuse*|sles*)
-            # SUSE PHP 8 packages: php8-imap, php8-mbstring, php8-curl, etc.
             $PKG_INSTALL apache2 mariadb mariadb-client \
                 ${PHP_PREFIX}-imap ${PHP_PREFIX}-mbstring ${PHP_PREFIX}-curl \
                 ${PHP_PREFIX}-xml ${PHP_PREFIX}-zip ${PHP_PREFIX}-gd \
@@ -270,7 +322,11 @@ fi
 
 # ---------- 2. Configure PHP ----------
 echo -e "\n${GREEN}[2/9] Configuring PHP...${NC}"
-[ -z "$php_ver" ] && php_ver=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "8.2")
+php_ini_version="$php_suffix"
+if [ -z "$php_ini_version" ] || [ "$php_ini_version" = "latest" ]; then
+    php_ini_version=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "8.2")
+fi
+
 if [[ "$PHP_INI_BASE" == "/etc/php.d" ]]; then
     ini="/etc/php.ini"
     sed -i 's/^upload_max_filesize.*/upload_max_filesize = 100M/' "$ini" 2>/dev/null || add_error "upload_max_filesize"
@@ -279,7 +335,7 @@ if [[ "$PHP_INI_BASE" == "/etc/php.d" ]]; then
     sed -i 's/^max_execution_time.*/max_execution_time = 300/' "$ini" 2>/dev/null || add_error "max_execution_time"
 else
     for env in apache2 cli; do
-        ini="/etc/php/${php_ver}/${env}/php.ini"
+        ini="/etc/php/${php_ini_version}/${env}/php.ini"
         [ -f "$ini" ] && {
             sed -i 's/^upload_max_filesize.*/upload_max_filesize = 100M/' "$ini" || add_error "upload_max_filesize $ini"
             sed -i 's/^post_max_size.*/post_max_size = 100M/' "$ini" || add_error "post_max_size $ini"
@@ -292,8 +348,6 @@ fi
 
 # ---------- 3. Database ----------
 echo -e "\n${GREEN}[3/9] Setting up database...${NC}"
-
-# Alpine: prepare socket directory and start MariaDB properly
 if [[ "$OS_ID" == "alpine" ]]; then
     mkdir -p /run/mysqld
     rc-service mariadb setup 2>/dev/null || true
@@ -356,7 +410,6 @@ for f in /etc/postfix/mysql_virtual_*.cf; do
     postmap "$f" || add_error "postmap $f failed"
 done
 
-# vmail user
 if ! getent passwd vmail &>/dev/null; then
     case "$OS_ID" in
         alpine) adduser -D -h /var/mail/vhosts -s /sbin/nologin vmail ;;
@@ -375,12 +428,10 @@ for f in /var/www/html/dovecot/dovecot.conf.patch /var/www/html/dovecot/conf.d/1
     [ ! -f "$f" ] && add_error "Missing Dovecot file: $f"
 done
 
-# Copy configuration files (handle Alpine flat layout vs normal)
 if [ -d /etc/dovecot/conf.d ]; then
     cp /var/www/html/dovecot/conf.d/10-auth.conf /etc/dovecot/conf.d/ 2>/dev/null || add_error "10-auth.conf copy failed"
     cp /var/www/html/dovecot/conf.d/auth-sql.conf.ext /etc/dovecot/conf.d/ 2>/dev/null || add_error "auth-sql.conf.ext copy failed"
 else
-    # Alpine or other flat layouts: copy directly into /etc/dovecot/
     cp /var/www/html/dovecot/conf.d/10-auth.conf /etc/dovecot/ 2>/dev/null || add_error "10-auth.conf copy failed"
     cp /var/www/html/dovecot/conf.d/auth-sql.conf.ext /etc/dovecot/ 2>/dev/null || add_error "auth-sql.conf.ext copy failed"
 fi
