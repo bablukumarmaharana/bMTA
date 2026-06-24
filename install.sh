@@ -1,47 +1,46 @@
 #!/bin/bash
 #=====================================================================
-# bMTA – Fully Automated Universal Installer (self‑repairing, collects errors)
+# bMTA – Universal Installer (fixes: Alpine, Debian, Gentoo, SUSE)
 # Run as root: sudo bash install.sh
 #=====================================================================
 set +e
 
-# ---------- colour helpers ----------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-
-# ---------- error collection ----------
 ERRORS=()
 add_error() { ERRORS+=("$1"); }
 
-# ---------- root check ----------
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Please run as root.${NC}"
-    exit 1
-fi
+if [ "$EUID" -ne 0 ]; then echo -e "${RED}Please run as root.${NC}"; exit 1; fi
 
-# ---------- environment (overridable) ----------
+# ---------- environment ----------
 DB_HOST="${BMTA_DB_HOST:-localhost}"
 DB_NAME="${BMTA_DB_NAME:-bmta}"
 DB_USER="${BMTA_DB_USER:-bmta}"
 DB_PASS="${BMTA_DB_PASS:-$(openssl rand -base64 16)}"
-APP_URL="${BMTA_BASE_URL:-http://$(hostname -I | awk '{print $1}')/}"
-SERVER_IP=$(hostname -I | awk '{print $1}')
+
+# ---------- portable IP detection ----------
+get_ip() {
+    if command -v hostname &>/dev/null && hostname -I &>/dev/null 2>&1; then
+        hostname -I | awk '{print $1}'
+    else
+        ip addr show scope global | grep inet | awk '{print $2}' | cut -d/ -f1 | head -1
+    fi
+}
+SERVER_IP=$(get_ip)
+[ -z "$SERVER_IP" ] && SERVER_IP="127.0.0.1"
+APP_URL="${BMTA_BASE_URL:-http://$SERVER_IP/}"
 
 # ---------- OS detection ----------
 if [ -f /etc/os-release ]; then . /etc/os-release
-else
-    echo -e "${RED}Cannot detect OS.${NC}"
-    exit 1
-fi
+else echo -e "${RED}Cannot detect OS.${NC}"; exit 1; fi
 OS_ID="$ID"
 OS_VERSION="${VERSION_ID:-}"
 OS_PRETTY="$PRETTY_NAME"
 
-# ---------- Detect package manager and settings ----------
+# ---------- package manager & settings ----------
 detect_distro() {
     if command -v apt &>/dev/null; then
         PKG_UPDATE="apt update -y && apt upgrade -y"
         PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt install -y"
-        PKG_EXTRA="software-properties-common dos2unix wget acl expect"
         PHP_PREFIX="php"
         APACHE_SERVICE="apache2"
         MYSQL_SERVICE="mariadb"
@@ -52,10 +51,10 @@ detect_distro() {
         APACHE_CONF_DIR="/etc/apache2/sites-available"
         APACHE_SITES_DIR="/etc/apache2/sites-enabled"
         PHP_INI_BASE="/etc/php"
+        MYSQL_CMD="mysql"
     elif command -v dnf &>/dev/null; then
         PKG_UPDATE="dnf update -y"
         PKG_INSTALL="dnf install -y"
-        PKG_EXTRA="epel-release dos2unix wget acl expect"
         PHP_PREFIX="php"
         APACHE_SERVICE="httpd"
         MYSQL_SERVICE="mariadb"
@@ -66,10 +65,10 @@ detect_distro() {
         APACHE_CONF_DIR="/etc/httpd/conf.d"
         APACHE_SITES_DIR="/etc/httpd/conf.d"
         PHP_INI_BASE="/etc/php.d"
+        MYSQL_CMD="mysql"
     elif command -v yum &>/dev/null; then
         PKG_UPDATE="yum update -y"
         PKG_INSTALL="yum install -y"
-        PKG_EXTRA="epel-release dos2unix wget acl expect"
         PHP_PREFIX="php"
         APACHE_SERVICE="httpd"
         MYSQL_SERVICE="mariadb"
@@ -80,11 +79,11 @@ detect_distro() {
         APACHE_CONF_DIR="/etc/httpd/conf.d"
         APACHE_SITES_DIR="/etc/httpd/conf.d"
         PHP_INI_BASE="/etc/php.d"
+        MYSQL_CMD="mysql"
     elif command -v zypper &>/dev/null; then
         PKG_UPDATE="zypper --non-interactive refresh && zypper --non-interactive update"
         PKG_INSTALL="zypper --non-interactive install"
-        PKG_EXTRA="dos2unix wget acl expect"
-        PHP_PREFIX="php"
+        PHP_PREFIX="php8"
         APACHE_SERVICE="apache2"
         MYSQL_SERVICE="mariadb"
         POSTFIX_SERVICE="postfix"
@@ -94,10 +93,10 @@ detect_distro() {
         APACHE_CONF_DIR="/etc/apache2/vhosts.d"
         APACHE_SITES_DIR="/etc/apache2/vhosts.d"
         PHP_INI_BASE="/etc/php"
+        MYSQL_CMD="mariadb"
     elif command -v pacman &>/dev/null; then
         PKG_UPDATE="pacman -Syu --noconfirm"
         PKG_INSTALL="pacman -S --noconfirm"
-        PKG_EXTRA="dos2unix wget acl expect"
         PHP_PREFIX="php"
         APACHE_SERVICE="httpd"
         MYSQL_SERVICE="mariadb"
@@ -108,10 +107,10 @@ detect_distro() {
         APACHE_CONF_DIR="/etc/httpd/conf/extra"
         APACHE_SITES_DIR="/etc/httpd/conf/sites"
         PHP_INI_BASE="/etc/php"
+        MYSQL_CMD="mariadb"
     elif command -v apk &>/dev/null; then
         PKG_UPDATE="apk update && apk upgrade"
         PKG_INSTALL="apk add"
-        PKG_EXTRA="dos2unix wget acl expect"
         PHP_PREFIX="php"
         APACHE_SERVICE="apache2"
         MYSQL_SERVICE="mariadb"
@@ -122,9 +121,23 @@ detect_distro() {
         APACHE_CONF_DIR="/etc/apache2/conf.d"
         APACHE_SITES_DIR="/etc/apache2/conf.d"
         PHP_INI_BASE="/etc/php"
+        MYSQL_CMD="mariadb"
+    elif command -v emerge &>/dev/null; then
+        PKG_UPDATE="emaint sync && emerge --sync"
+        PKG_INSTALL="emerge"
+        PHP_PREFIX="dev-lang/php"
+        APACHE_SERVICE="apache2"
+        MYSQL_SERVICE="mariadb"
+        POSTFIX_SERVICE="postfix"
+        DOVECOT_SERVICE="dovecot"
+        APACHE_USER="apache"
+        APACHE_GROUP="apache"
+        APACHE_CONF_DIR="/etc/apache2/vhosts.d"
+        APACHE_SITES_DIR="/etc/apache2/vhosts.d"
+        PHP_INI_BASE="/etc/php"
+        MYSQL_CMD="mariadb"
     else
-        echo -e "${RED}Unsupported package manager.${NC}"
-        exit 1
+        echo -e "${RED}Unsupported package manager.${NC}"; exit 1
     fi
 }
 detect_distro
@@ -136,57 +149,47 @@ echo -e "${GREEN}========================================${NC}"
 
 # ---------- 0. Pre‑flight check & repair ----------
 echo -e "\n${GREEN}[0/9] Pre‑flight check...${NC}"
-# 0.1 Internet connectivity
 if ! ping -c 2 8.8.8.8 &>/dev/null; then
-    echo -e "${RED}No internet access. Please check your network.${NC}"
-    exit 1
+    echo -e "${RED}No internet access.${NC}"; exit 1
 fi
 
-# 0.2 Test package manager with a tiny package
-echo -e "    Testing package manager..."
-if ! eval "$PKG_INSTALL dos2unix" &>/tmp/bmta_pkg_test.log; then
-    echo -e "${YELLOW}Package manager failed – attempting automatic repair...${NC}"
-    case "$OS_ID" in
-        kali)
-            echo "    Fixing Kali sources..."
-            cat > /etc/apt/sources.list <<'KALIEOF'
+# 0.2 Test package manager (install dos2unix)
+echo "    Testing package manager..."
+case "$OS_ID" in
+    alpine) $PKG_INSTALL dos2unix &>/dev/null || {
+            echo "    Fixing Alpine repositories..."
+            echo "http://dl-cdn.alpinelinux.org/alpine/v$(cat /etc/alpine-release | cut -d. -f1,2)/main" > /etc/apk/repositories
+            echo "http://dl-cdn.alpinelinux.org/alpine/v$(cat /etc/alpine-release | cut -d. -f1,2)/community" >> /etc/apk/repositories
+            apk update && apk add dos2unix || { echo -e "${RED}Alpine repair failed.${NC}"; exit 1; }
+        }
+        ;;
+    gentoo) emerge sys-apps/dos2unix 2>/dev/null || add_error "Gentoo dos2unix install skipped" ;;
+    *) eval "$PKG_INSTALL dos2unix" &>/dev/null || {
+            echo -e "${YELLOW}Package manager failed – auto‑repair...${NC}"
+            case "$OS_ID" in
+                kali) cat > /etc/apt/sources.list <<'KALIEOF'
 deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
 deb-src http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
 KALIEOF
-            apt update -y && DEBIAN_FRONTEND=noninteractive apt install -y dos2unix || {
-                echo -e "${RED}Automatic repair failed. Please fix your package manager manually.${NC}"
-                exit 1
-            }
-            ;;
-        ubuntu|debian)
-            apt update --fix-missing -y && DEBIAN_FRONTEND=noninteractive apt install -y dos2unix || {
-                echo -e "${RED}Automatic repair failed. Check your /etc/apt/sources.list.${NC}"
-                exit 1
-            }
-            ;;
-        centos|rhel|rocky|almalinux|fedora)
-            dnf install -y epel-release && dnf update -y && dnf install -y dos2unix 2>/dev/null || {
-                # fallback to yum
-                yum install -y epel-release && yum update -y && yum install -y dos2unix || {
-                    echo -e "${RED}Automatic repair failed. Check your subscription/repos.${NC}"
-                    exit 1
-                }
-            }
-            ;;
-        *)
-            echo -e "${RED}Could not auto‑repair package manager. Please fix it manually.${NC}"
-            exit 1
-            ;;
-    esac
-    echo -e "    ${GREEN}Package manager is now functional.${NC}"
-fi
+                    apt update -y && DEBIAN_FRONTEND=noninteractive apt install -y dos2unix || { echo -e "${RED}Kali repair failed.${NC}"; exit 1; }
+                    ;;
+                ubuntu|debian) apt update --fix-missing -y && DEBIAN_FRONTEND=noninteractive apt install -y dos2unix || { echo -e "${RED}apt repair failed.${NC}"; exit 1; }
+                    ;;
+                centos|rhel|rocky|almalinux) dnf install -y epel-release dos2unix 2>/dev/null || yum install -y epel-release dos2unix || { echo -e "${RED}RHEL repair failed.${NC}"; exit 1; }
+                    ;;
+                opensuse*|sles*) zypper --non-interactive install dos2unix || { echo -e "${RED}SUSE repair failed.${NC}"; exit 1; }
+                    ;;
+                *) echo -e "${RED}Could not auto‑repair. Please fix package manager manually.${NC}"; exit 1 ;;
+            esac
+        }
+        ;;
+esac
 
 # ---------- 1. Install system packages ----------
 echo -e "\n${GREEN}[1/9] Installing system packages...${NC}"
 eval "$PKG_UPDATE" || add_error "System update failed"
-$PKG_INSTALL $PKG_EXTRA || add_error "Failed to install essential tools"
 
-# Add PHP repository for Debian/Ubuntu
+# Add PHP repos for Debian/Ubuntu
 if command -v apt &>/dev/null; then
     if [[ "$OS_ID" == "ubuntu" ]]; then
         add-apt-repository -y ppa:ondrej/php || add_error "Failed to add PHP PPA"
@@ -194,15 +197,14 @@ if command -v apt &>/dev/null; then
     fi
 fi
 
-# Enable EPEL, Remi, CRB for RHEL-based
+# RHEL: EPEL + Remi + CRB
 if command -v dnf &>/dev/null || command -v yum &>/dev/null; then
-    $PKG_INSTALL https://rpms.remirepo.net/enterprise/remi-release-${OS_VERSION}.rpm || add_error "Failed to install Remi repo"
+    $PKG_INSTALL https://rpms.remirepo.net/enterprise/remi-release-${OS_VERSION}.rpm 2>/dev/null || true
     if command -v dnf &>/dev/null; then
-        dnf module reset php -y || add_error "PHP module reset failed"
-        dnf module enable php:remi-8.2 -y || add_error "Failed to enable PHP 8.2 module"
-        # CRB for opendkim dependencies
-        dnf config-manager --set-enabled crb || add_error "Failed to enable CRB repository (needed for libmemcached)"
-        dnf install -y libmemcached libmemcached-devel || add_error "Failed to install libmemcached (opendkim dependency)"
+        dnf module reset php -y 2>/dev/null || true
+        dnf module enable php:remi-8.2 -y 2>/dev/null || add_error "PHP 8.2 module enable failed"
+        dnf config-manager --set-enabled crb 2>/dev/null || true
+        dnf install -y libmemcached libmemcached-devel 2>/dev/null || true   # opendkim dep
     fi
 fi
 
@@ -211,39 +213,53 @@ php_ver=""
 for v in 8.3 8.2 8.1 8.0; do
     if $PKG_INSTALL ${PHP_PREFIX}${v} 2>/dev/null; then php_ver="$v"; break; fi
 done
-if [ -z "$php_ver" ]; then
-    $PKG_INSTALL ${PHP_PREFIX} || php_ver=""
-fi
+[ -z "$php_ver" ] && $PKG_INSTALL ${PHP_PREFIX} && php_ver=""
 
-# Install the core stack
-if command -v apt &>/dev/null; then
-    $PKG_INSTALL apache2 mariadb-server mariadb-client \
-        php${php_ver} libapache2-mod-php${php_ver} \
-        php${php_ver}-mysql php${php_ver}-imap php${php_ver}-cli \
-        php${php_ver}-curl php${php_ver}-mbstring php${php_ver}-xml \
-        php${php_ver}-zip php${php_ver}-gd \
-        postfix postfix-mysql dovecot-core dovecot-mysql dovecot-imapd dovecot-pop3d \
-        opendkim opendkim-tools || add_error "Failed to install one or more packages"
-elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
-    $PKG_INSTALL httpd mariadb-server mariadb \
-        php php-mysqlnd php-imap php-cli php-curl php-mbstring php-xml php-zip php-gd \
-        postfix postfix-mysql dovecot dovecot-mysql dovecot-pigeonhole \
-        opendkim opendkim-tools || add_error "Failed to install one or more packages"
-elif command -v zypper &>/dev/null; then
-    $PKG_INSTALL apache2 mariadb mariadb-client \
-        php${php_ver} php${php_ver}-mysql php${php_ver}-imap php${php_ver}-cli \
-        php${php_ver}-curl php${php_ver}-mbstring php${php_ver}-xml php${php_ver}-zip php${php_ver}-gd \
-        postfix postfix-mysql dovecot23 dovecot23-backend-mysql \
-        opendkim || add_error "Failed to install one or more packages"
-elif command -v pacman &>/dev/null; then
-    $PKG_INSTALL apache mariadb \
-        php php-apache php-mysql php-imap php-curl php-mbstring php-xml php-zip php-gd \
-        postfix postfix-mysql dovecot opendkim || add_error "Failed to install one or more packages"
-elif command -v apk &>/dev/null; then
-    $PKG_INSTALL apache2 mariadb mariadb-client \
-        php php-mysqlnd php-imap php-curl php-mbstring php-xml php-zip php-gd \
-        postfix postfix-mysql dovecot opendkim || add_error "Failed to install one or more packages"
-fi
+# Install core packages per distribution
+install_core() {
+    case "$OS_ID" in
+        ubuntu|debian|kali|devuan|pureos|turnkeylinux)
+            $PKG_INSTALL apache2 mariadb-server mariadb-client \
+                php${php_ver} libapache2-mod-php${php_ver} \
+                php${php_ver}-mysql php${php_ver}-imap php${php_ver}-cli \
+                php${php_ver}-curl php${php_ver}-mbstring php${php_ver}-xml \
+                php${php_ver}-zip php${php_ver}-gd \
+                postfix postfix-mysql dovecot-core dovecot-mysql dovecot-imapd dovecot-pop3d \
+                opendkim opendkim-tools
+            ;;
+        centos|rhel|rocky|almalinux|fedora|amzn|oracle)
+            $PKG_INSTALL httpd mariadb-server mariadb \
+                php php-mysqlnd php-imap php-cli php-curl php-mbstring php-xml php-zip php-gd \
+                postfix postfix-mysql dovecot dovecot-mysql dovecot-pigeonhole \
+                opendkim opendkim-tools
+            ;;
+        opensuse*|sles*)
+            # SUSE PHP 8 packages: php8-imap, php8-mbstring, php8-curl, etc.
+            $PKG_INSTALL apache2 mariadb mariadb-client \
+                ${PHP_PREFIX}-imap ${PHP_PREFIX}-mbstring ${PHP_PREFIX}-curl \
+                ${PHP_PREFIX}-xml ${PHP_PREFIX}-zip ${PHP_PREFIX}-gd \
+                postfix postfix-mysql dovecot dovecot-backend-mysql \
+                opendkim
+            ;;
+        arch|manjaro)
+            $PKG_INSTALL apache mariadb \
+                php php-apache php-mysql php-imap php-curl php-mbstring php-xml php-zip php-gd \
+                postfix postfix-mysql dovecot opendkim
+            ;;
+        alpine)
+            $PKG_INSTALL apache2 mariadb mariadb-client \
+                php php-mysqlnd php-imap php-curl php-mbstring php-xml php-zip php-gd \
+                postfix postfix-mysql dovecot opendkim
+            ;;
+        gentoo)
+            $PKG_INSTALL www-servers/apache dev-db/mariadb \
+                dev-lang/php dev-php/php-mysql dev-php/php-imap dev-php/php-curl dev-php/php-mbstring dev-php/php-xml dev-php/php-zip dev-php/php-gd \
+                mail-mta/postfix mail-mta/dovecot mail-filter/opendkim
+            ;;
+        *) add_error "Unknown distribution for package installation." ;;
+    esac
+}
+install_core || add_error "Failed to install one or more packages"
 
 # Postfix preseeding (Debian/Ubuntu)
 if command -v debconf-set-selections &>/dev/null; then
@@ -254,24 +270,21 @@ fi
 
 # ---------- 2. Configure PHP ----------
 echo -e "\n${GREEN}[2/9] Configuring PHP...${NC}"
-if [ -z "$php_ver" ]; then
-    php_ver=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null) || php_ver="8.2"
-fi
-
+[ -z "$php_ver" ] && php_ver=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "8.2")
 if [[ "$PHP_INI_BASE" == "/etc/php.d" ]]; then
-    ini_file="/etc/php.ini"
-    sed -i 's/^upload_max_filesize.*/upload_max_filesize = 100M/' "$ini_file" 2>/dev/null || add_error "Failed to set upload_max_filesize"
-    sed -i 's/^post_max_size.*/post_max_size = 100M/' "$ini_file" 2>/dev/null || add_error "Failed to set post_max_size"
-    sed -i 's/^memory_limit.*/memory_limit = 256M/' "$ini_file" 2>/dev/null || add_error "Failed to set memory_limit"
-    sed -i 's/^max_execution_time.*/max_execution_time = 300/' "$ini_file" 2>/dev/null || add_error "Failed to set max_execution_time"
+    ini="/etc/php.ini"
+    sed -i 's/^upload_max_filesize.*/upload_max_filesize = 100M/' "$ini" 2>/dev/null || add_error "upload_max_filesize"
+    sed -i 's/^post_max_size.*/post_max_size = 100M/' "$ini" 2>/dev/null || add_error "post_max_size"
+    sed -i 's/^memory_limit.*/memory_limit = 256M/' "$ini" 2>/dev/null || add_error "memory_limit"
+    sed -i 's/^max_execution_time.*/max_execution_time = 300/' "$ini" 2>/dev/null || add_error "max_execution_time"
 else
     for env in apache2 cli; do
         ini="/etc/php/${php_ver}/${env}/php.ini"
         [ -f "$ini" ] && {
-            sed -i 's/^upload_max_filesize.*/upload_max_filesize = 100M/' "$ini" || add_error "Failed to set upload_max_filesize in $ini"
-            sed -i 's/^post_max_size.*/post_max_size = 100M/' "$ini" || add_error "Failed to set post_max_size in $ini"
-            sed -i 's/^memory_limit.*/memory_limit = 256M/' "$ini" || add_error "Failed to set memory_limit in $ini"
-            sed -i 's/^max_execution_time.*/max_execution_time = 300/' "$ini" || add_error "Failed to set max_execution_time in $ini"
+            sed -i 's/^upload_max_filesize.*/upload_max_filesize = 100M/' "$ini" || add_error "upload_max_filesize $ini"
+            sed -i 's/^post_max_size.*/post_max_size = 100M/' "$ini" || add_error "post_max_size $ini"
+            sed -i 's/^memory_limit.*/memory_limit = 256M/' "$ini" || add_error "memory_limit $ini"
+            sed -i 's/^max_execution_time.*/max_execution_time = 300/' "$ini" || add_error "max_execution_time $ini"
             echo "    Updated $ini"
         }
     done
@@ -279,21 +292,29 @@ fi
 
 # ---------- 3. Database ----------
 echo -e "\n${GREEN}[3/9] Setting up database...${NC}"
-systemctl start ${MYSQL_SERVICE} 2>/dev/null || service ${MYSQL_SERVICE} start 2>/dev/null || add_error "Failed to start ${MYSQL_SERVICE}"
+
+# Alpine: prepare socket directory and start MariaDB properly
+if [[ "$OS_ID" == "alpine" ]]; then
+    mkdir -p /run/mysqld
+    rc-service mariadb setup 2>/dev/null || true
+    rc-service mariadb start 2>/dev/null || add_error "MariaDB start failed on Alpine"
+else
+    systemctl start ${MYSQL_SERVICE} 2>/dev/null || service ${MYSQL_SERVICE} start 2>/dev/null || add_error "Failed to start ${MYSQL_SERVICE}"
+fi
 systemctl enable ${MYSQL_SERVICE} 2>/dev/null || true
 
 DB_PASS_SQL=$(printf '%s\n' "$DB_PASS" | sed "s/'/''/g")
-mysql -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || add_error "Database creation failed"
-mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS_SQL}';" || add_error "User creation failed"
-mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost'; FLUSH PRIVILEGES;" || add_error "GRANT failed"
-mysql -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS_SQL}';" || add_error "ALTER USER failed"
+$MYSQL_CMD -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || add_error "Database creation failed"
+$MYSQL_CMD -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS_SQL}';" || add_error "User creation failed"
+$MYSQL_CMD -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost'; FLUSH PRIVILEGES;" || add_error "GRANT failed"
+$MYSQL_CMD -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS_SQL}';" || add_error "ALTER USER failed"
 
 if [ -f /var/www/html/sql/schema.sql ]; then
     dos2unix /var/www/html/sql/schema.sql 2>/dev/null || true
     sed -i 's/CREATE TABLE `/CREATE TABLE IF NOT EXISTS `/g' /var/www/html/sql/schema.sql
-    mysql ${DB_NAME} < /var/www/html/sql/schema.sql || add_error "Schema import failed"
+    $MYSQL_CMD ${DB_NAME} < /var/www/html/sql/schema.sql || add_error "Schema import failed"
 else
-    add_error "Schema file not found at /var/www/html/sql/schema.sql"
+    add_error "schema.sql not found"
 fi
 
 # ---------- 4. App config ----------
@@ -321,163 +342,140 @@ EOF
 
 # ---------- 5. Postfix ----------
 echo -e "\n${GREEN}[5/9] Configuring Postfix...${NC}"
+mkdir -p /etc/postfix
 for f in /var/www/html/postfix/main.cf.patch /var/www/html/postfix/mysql_virtual_domains.cf /var/www/html/postfix/mysql_virtual_mailbox_maps.cf /var/www/html/postfix/mysql_virtual_alias_maps.cf; do
     [ ! -f "$f" ] && add_error "Missing Postfix file: $f"
 done
-cp /etc/postfix/main.cf /etc/postfix/main.cf.bak 2>/dev/null || true
+[ -f /etc/postfix/main.cf ] && cp /etc/postfix/main.cf /etc/postfix/main.cf.bak
 dos2unix /var/www/html/postfix/main.cf.patch 2>/dev/null || true
-cat /var/www/html/postfix/main.cf.patch >> /etc/postfix/main.cf || add_error "Failed to append Postfix config"
-cp /var/www/html/postfix/mysql_virtual_*.cf /etc/postfix/ || add_error "Failed to copy Postfix mysql files"
+cat /var/www/html/postfix/main.cf.patch >> /etc/postfix/main.cf
+cp /var/www/html/postfix/mysql_virtual_*.cf /etc/postfix/
 DB_PASS_ESC=$(printf '%s\n' "$DB_PASS" | sed -e 's/[\|&]/\\&/g')
 for f in /etc/postfix/mysql_virtual_*.cf; do
-    sed -i "s|password = .*|password = ${DB_PASS_ESC}|" "$f" || add_error "Failed to set password in $f"
-    postmap "$f" || add_error "postmap failed for $f"
+    sed -i "s|password = .*|password = ${DB_PASS_ESC}|" "$f"
+    postmap "$f" || add_error "postmap $f failed"
 done
-id -u vmail &>/dev/null || useradd -m -d /var/mail/vhosts -s /bin/false vmail || add_error "Failed to create vmail user"
+
+# vmail user
+if ! getent passwd vmail &>/dev/null; then
+    case "$OS_ID" in
+        alpine) adduser -D -h /var/mail/vhosts -s /sbin/nologin vmail ;;
+        *) useradd -m -d /var/mail/vhosts -s /bin/false vmail ;;
+    esac
+fi
 mkdir -p /var/mail/vhosts
-chown -R vmail:vmail /var/mail/vhosts || add_error "Failed to set ownership on /var/mail/vhosts"
+chown -R vmail:vmail /var/mail/vhosts 2>/dev/null || add_error "vmail ownership failed"
 chmod -R 770 /var/mail/vhosts
-systemctl restart ${POSTFIX_SERVICE} 2>/dev/null || service ${POSTFIX_SERVICE} restart 2>/dev/null || add_error "Failed to restart Postfix"
+systemctl restart ${POSTFIX_SERVICE} 2>/dev/null || service ${POSTFIX_SERVICE} restart 2>/dev/null || add_error "Postfix restart failed"
 
 # ---------- 6. Dovecot ----------
 echo -e "\n${GREEN}[6/9] Configuring Dovecot...${NC}"
+mkdir -p /etc/dovecot/conf.d
 for f in /var/www/html/dovecot/dovecot.conf.patch /var/www/html/dovecot/conf.d/10-auth.conf /var/www/html/dovecot/conf.d/auth-sql.conf.ext /var/www/html/dovecot/dovecot-sql.conf.ext; do
     [ ! -f "$f" ] && add_error "Missing Dovecot file: $f"
 done
-cp /var/www/html/dovecot/dovecot.conf.patch /etc/dovecot/ || true
-cp /var/www/html/dovecot/conf.d/10-auth.conf /etc/dovecot/conf.d/ || add_error "Failed to copy Dovecot 10-auth.conf"
-cp /var/www/html/dovecot/conf.d/auth-sql.conf.ext /etc/dovecot/conf.d/ || add_error "Failed to copy Dovecot auth-sql.conf.ext"
-cp /var/www/html/dovecot/dovecot-sql.conf.ext /etc/dovecot/ || add_error "Failed to copy Dovecot dovecot-sql.conf.ext"
+
+# Copy configuration files (handle Alpine flat layout vs normal)
+if [ -d /etc/dovecot/conf.d ]; then
+    cp /var/www/html/dovecot/conf.d/10-auth.conf /etc/dovecot/conf.d/ 2>/dev/null || add_error "10-auth.conf copy failed"
+    cp /var/www/html/dovecot/conf.d/auth-sql.conf.ext /etc/dovecot/conf.d/ 2>/dev/null || add_error "auth-sql.conf.ext copy failed"
+else
+    # Alpine or other flat layouts: copy directly into /etc/dovecot/
+    cp /var/www/html/dovecot/conf.d/10-auth.conf /etc/dovecot/ 2>/dev/null || add_error "10-auth.conf copy failed"
+    cp /var/www/html/dovecot/conf.d/auth-sql.conf.ext /etc/dovecot/ 2>/dev/null || add_error "auth-sql.conf.ext copy failed"
+fi
+cp /var/www/html/dovecot/dovecot.conf.patch /etc/dovecot/ 2>/dev/null || add_error "dovecot.conf.patch copy failed"
+cp /var/www/html/dovecot/dovecot-sql.conf.ext /etc/dovecot/ 2>/dev/null || add_error "dovecot-sql.conf.ext copy failed"
 dos2unix /etc/dovecot/conf.d/10-auth.conf /etc/dovecot/conf.d/auth-sql.conf.ext /etc/dovecot/dovecot-sql.conf.ext 2>/dev/null || true
-sed -i "s|connect = .*|connect = host=127.0.0.1 dbname=${DB_NAME} user=${DB_USER} password=${DB_PASS_ESC}|" /etc/dovecot/dovecot-sql.conf.ext || add_error "Failed to set Dovecot DB credentials"
+dos2unix /etc/dovecot/10-auth.conf /etc/dovecot/auth-sql.conf.ext 2>/dev/null || true
+sed -i "s|connect = .*|connect = host=127.0.0.1 dbname=${DB_NAME} user=${DB_USER} password=${DB_PASS_ESC}|" /etc/dovecot/dovecot-sql.conf.ext
 chown -R vmail:dovecot /etc/dovecot 2>/dev/null || true
-chmod -R o-rwx /etc/dovecot
-systemctl restart ${DOVECOT_SERVICE} 2>/dev/null || service ${DOVECOT_SERVICE} restart 2>/dev/null || add_error "Failed to restart Dovecot"
+chmod -R o-rwx /etc/dovecot 2>/dev/null || true
+systemctl restart ${DOVECOT_SERVICE} 2>/dev/null || service ${DOVECOT_SERVICE} restart 2>/dev/null || add_error "Dovecot restart failed"
 
 # ---------- 7. Apache / httpd ----------
-echo -e "\n${GREEN}[7/9] Configuring Apache/httpd...${NC}"
-# Enable rewrite
-if command -v a2enmod &>/dev/null; then a2enmod rewrite || add_error "Failed to enable mod_rewrite"; fi
-
+echo -e "\n${GREEN}[7/9] Configuring Apache...${NC}"
+if command -v a2enmod &>/dev/null; then a2enmod rewrite || add_error "mod_rewrite failed"; fi
+mkdir -p ${APACHE_CONF_DIR}
 if [[ "$APACHE_SERVICE" == "apache2" ]]; then
-    cat > ${APACHE_CONF_DIR}/000-bmta.conf <<EOF || add_error "Failed to create Apache vhost"
+    cat > ${APACHE_CONF_DIR}/000-bmta.conf <<'VHOST'
 <VirtualHost *:80>
-    ServerAdmin webmaster@localhost
     DocumentRoot /var/www/html/public
     <Directory /var/www/html/public>
         AllowOverride All
         Require all granted
     </Directory>
-    ErrorLog \${APACHE_LOG_DIR}/error.log
-    CustomLog \${APACHE_LOG_DIR}/access.log combined
+    ErrorLog /var/log/apache2/bmta_error.log
+    CustomLog /var/log/apache2/bmta_access.log combined
 </VirtualHost>
-EOF
-    [ -d "$APACHE_SITES_DIR" ] && ln -sf ${APACHE_CONF_DIR}/000-bmta.conf ${APACHE_SITES_DIR}/ 2>/dev/null || add_error "Failed to symlink Apache site"
+VHOST
+    [ -d "$APACHE_SITES_DIR" ] && ln -sf ${APACHE_CONF_DIR}/000-bmta.conf ${APACHE_SITES_DIR}/ 2>/dev/null || add_error "Apache symlink failed"
 else
-    cat > ${APACHE_CONF_DIR}/bmta.conf <<EOF || add_error "Failed to create Apache vhost"
+    cat > ${APACHE_CONF_DIR}/bmta.conf <<'VHOST'
 <VirtualHost *:80>
-    ServerAdmin webmaster@localhost
     DocumentRoot /var/www/html/public
     <Directory /var/www/html/public>
         AllowOverride All
         Require all granted
     </Directory>
-    ErrorLog "logs/bmta_error_log"
-    CustomLog "logs/bmta_access_log" combined
+    ErrorLog logs/bmta_error_log
+    CustomLog logs/bmta_access_log combined
 </VirtualHost>
-EOF
+VHOST
 fi
-
-chown -R ${APACHE_USER}:${APACHE_GROUP} /var/www/html/ || add_error "Failed to set ownership"
+chown -R ${APACHE_USER}:${APACHE_GROUP} /var/www/html/ 2>/dev/null || add_error "Apache ownership failed"
 mkdir -p /var/www/html/public/uploads
 chmod 775 /var/www/html/public/uploads
-chcon -R -t httpd_sys_rw_content_t /var/www/html/public/uploads 2>/dev/null || true  # SELinux
+chcon -R -t httpd_sys_rw_content_t /var/www/html/public/uploads 2>/dev/null || true
+systemctl restart ${APACHE_SERVICE} 2>/dev/null || service ${APACHE_SERVICE} restart 2>/dev/null || add_error "Apache restart failed"
 
-systemctl restart ${APACHE_SERVICE} 2>/dev/null || service ${APACHE_SERVICE} restart 2>/dev/null || add_error "Failed to restart Apache"
-
-# ---------- 8. Firewall (automatic port opening) ----------
+# ---------- 8. Firewall ----------
 echo -e "\n${GREEN}[8/9] Configuring firewall...${NC}"
-configure_firewall() {
-    # Firewalld (RHEL/CentOS/Fedora)
-    if command -v firewall-cmd &>/dev/null; then
-        systemctl enable --now firewalld 2>/dev/null || true
-        firewall-cmd --permanent --add-port=80/tcp --add-port=25/tcp --add-port=443/tcp --add-port=587/tcp --add-port=993/tcp 2>/dev/null || true
-        firewall-cmd --reload 2>/dev/null || true
-        echo "    firewalld ports added."
-        return 0
-    fi
-
-    # ufw (Ubuntu/Debian)
-    if command -v ufw &>/dev/null; then
-        ufw --force enable 2>/dev/null || true
-        ufw allow 80/tcp 2>/dev/null
-        ufw allow 25/tcp 2>/dev/null
-        ufw allow 443/tcp 2>/dev/null
-        ufw allow 587/tcp 2>/dev/null
-        ufw allow 993/tcp 2>/dev/null
-        echo "    ufw ports added."
-        return 0
-    fi
-
-    # iptables (legacy, temporary)
-    if command -v iptables &>/dev/null; then
-        iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null
-        iptables -I INPUT -p tcp --dport 25 -j ACCEPT 2>/dev/null
-        iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null
-        iptables -I INPUT -p tcp --dport 587 -j ACCEPT 2>/dev/null
-        iptables -I INPUT -p tcp --dport 993 -j ACCEPT 2>/dev/null
-        echo "    iptables rules added (non‑persistent)."
-        return 0
-    fi
-
-    # No firewall present – install one based on package manager
+FW_PORTS=(22 21 25 80 443 587 993 3306 8080)
+if command -v firewall-cmd &>/dev/null; then
+    systemctl enable --now firewalld 2>/dev/null || true
+    for p in "${FW_PORTS[@]}"; do firewall-cmd --permanent --add-port=${p}/tcp 2>/dev/null || true; done
+    firewall-cmd --reload 2>/dev/null || true
+    echo "    firewalld ports added."
+elif command -v ufw &>/dev/null; then
+    ufw --force enable 2>/dev/null || true
+    for p in "${FW_PORTS[@]}"; do ufw allow ${p}/tcp 2>/dev/null; done
+    echo "    ufw ports added."
+elif command -v iptables &>/dev/null; then
+    for p in "${FW_PORTS[@]}"; do iptables -I INPUT -p tcp --dport $p -j ACCEPT 2>/dev/null; done
+    echo "    iptables rules added (non‑persistent)."
+else
     if command -v apt &>/dev/null; then
-        DEBIAN_FRONTEND=noninteractive apt install -y ufw 2>/dev/null
-        ufw --force enable 2>/dev/null
-        ufw allow 80/tcp; ufw allow 25/tcp; ufw allow 443/tcp; ufw allow 587/tcp; ufw allow 993/tcp
-        echo "    ufw installed and ports added."
+        DEBIAN_FRONTEND=noninteractive apt install -y ufw && ufw --force enable && for p in "${FW_PORTS[@]}"; do ufw allow ${p}/tcp; done
     elif command -v dnf &>/dev/null; then
-        dnf install -y firewalld 2>/dev/null
-        systemctl enable --now firewalld 2>/dev/null
-        firewall-cmd --permanent --add-port=80/tcp --add-port=25/tcp --add-port=443/tcp --add-port=587/tcp --add-port=993/tcp 2>/dev/null
-        firewall-cmd --reload 2>/dev/null
-        echo "    firewalld installed and ports added."
+        dnf install -y firewalld && systemctl enable --now firewalld && for p in "${FW_PORTS[@]}"; do firewall-cmd --permanent --add-port=${p}/tcp; done && firewall-cmd --reload
     elif command -v yum &>/dev/null; then
-        yum install -y firewalld 2>/dev/null
-        systemctl enable --now firewalld 2>/dev/null
-        firewall-cmd --permanent --add-port=80/tcp --add-port=25/tcp --add-port=443/tcp --add-port=587/tcp --add-port=993/tcp 2>/dev/null
-        firewall-cmd --reload 2>/dev/null
-        echo "    firewalld installed and ports added."
+        yum install -y firewalld && systemctl enable --now firewalld && for p in "${FW_PORTS[@]}"; do firewall-cmd --permanent --add-port=${p}/tcp; done && firewall-cmd --reload
     else
-        add_error "Could not configure firewall. Please open ports 80,25,443,587,993 manually."
+        add_error "No firewall installed; please open ports: ${FW_PORTS[*]}"
     fi
-}
-configure_firewall
+fi
 
 # ---------- 9. Cron ----------
 echo -e "\n${GREEN}[9/9] Installing cron jobs...${NC}"
 mkdir -p /var/log/bmta
 (crontab -l 2>/dev/null | grep -v "process_queue\|process_bounces"; 
  echo "* * * * * /usr/bin/php /var/www/html/cron/process_queue.php >> /var/log/bmta/queue.log 2>&1";
- echo "*/5 * * * * /usr/bin/php /var/www/html/cron/process_bounces.php >> /var/log/bmta/bounces.log 2>&1") | crontab - || add_error "Failed to install cron jobs"
+ echo "*/5 * * * * /usr/bin/php /var/www/html/cron/process_bounces.php >> /var/log/bmta/bounces.log 2>&1") | crontab - || add_error "Cron install failed"
 
-# ---------- Final Report ----------
+# ---------- Final report ----------
 echo -e "\n${GREEN}========================================${NC}"
 echo -e "${GREEN}  bMTA installation completed!            ${NC}"
 echo -e "${GREEN}========================================${NC}"
-
 if [ ${#ERRORS[@]} -eq 0 ]; then
     echo -e "${GREEN}No errors detected.${NC}"
 else
     echo -e "${RED}The following errors occurred:${NC}"
-    for err in "${ERRORS[@]}"; do
-        echo -e "  - ${RED}$err${NC}"
-    done
-    echo -e "\nSome parts may not be fully functional. Please check the messages above."
+    for err in "${ERRORS[@]}"; do echo -e "  - ${RED}$err${NC}"; done
+    echo -e "\nSome parts may not work. Please fix the issues above."
 fi
-
 echo ""
 echo -e "Open ${YELLOW}${APP_URL}${NC} to create the admin account."
 echo -e "Database: ${DB_NAME} | User: ${DB_USER} | Pass: ${DB_PASS}"
-echo -e "Firewall ports 25,80,443,587,993 have been automatically opened."
+echo -e "Ports opened: ${FW_PORTS[*]}"
 echo -e "${RED}Set DNS records as shown in the domain manager.${NC}"
