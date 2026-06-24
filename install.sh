@@ -1,6 +1,6 @@
 #!/bin/bash
 #=====================================================================
-# bMTA – Universal Installer (latest PHP + latest MariaDB, Dovecot, etc.)
+# bMTA – Universal Installer (latest everything + openSUSE fixes)
 # Run as root: sudo bash install.sh
 #=====================================================================
 set +e
@@ -190,22 +190,26 @@ eval "$PKG_UPDATE" || add_error "System update failed"
 
 # ---------- ADDITIONAL REPOS FOR LATEST VERSIONS ----------
 if command -v apt &>/dev/null; then
-    # --- MariaDB official repo (latest version) ---
+    # MariaDB official repo (latest)
     if [ ! -f /etc/apt/sources.list.d/mariadb.list ]; then
         curl -sS https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | bash -s -- --mariadb-server-version="mariadb-10.11" 2>/dev/null || add_error "MariaDB repo setup failed"
     fi
-    # --- Dovecot community repo (latest) ---
+    # Dovecot community repo
     if [ ! -f /etc/apt/sources.list.d/dovecot.list ]; then
         echo "deb [arch=amd64] https://repo.dovecot.org/ce-2.3-latest/$(lsb_release -sc)/$(lsb_release -sc) main" > /etc/apt/sources.list.d/dovecot.list
         apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 26FF2A43 2>/dev/null || true
     fi
     apt update -y || add_error "apt update after adding repos failed"
 elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
-    # RHEL already uses EPEL + Remi, which have latest MariaDB, Dovecot, etc.
     :
+elif command -v zypper &>/dev/null; then
+    # openSUSE: add PHP 8 repository if packages are missing later
+    # Pre‑add devel:languages:php for latest PHP modules
+    zypper --non-interactive addrepo -f https://download.opensuse.org/repositories/devel:/languages:/php/openSUSE_Leap_${VERSION_ID}/devel:languages:php.repo 2>/dev/null || true
+    zypper --non-interactive refresh 2>/dev/null || true
 fi
 
-# PHP repos
+# PHP repos (Debian/Ubuntu)
 if command -v apt &>/dev/null; then
     if [[ "$OS_ID" == "ubuntu" ]]; then
         add-apt-repository -y ppa:ondrej/php || add_error "Failed to add PHP PPA"
@@ -287,10 +291,11 @@ install_core() {
                 opendkim opendkim-tools
             ;;
         opensuse*|sles*)
+            # SUSE: use exact package names (dovecot23-backend-mysql)
             $PKG_INSTALL apache2 mariadb mariadb-client \
                 ${PHP_PREFIX}-imap ${PHP_PREFIX}-mbstring ${PHP_PREFIX}-curl \
                 ${PHP_PREFIX}-xml ${PHP_PREFIX}-zip ${PHP_PREFIX}-gd \
-                postfix postfix-mysql dovecot dovecot-backend-mysql \
+                postfix postfix-mysql dovecot dovecot23-backend-mysql \
                 opendkim
             ;;
         arch|manjaro)
@@ -312,6 +317,17 @@ install_core() {
     esac
 }
 install_core || add_error "Failed to install one or more packages"
+
+# Fix MYSQL_CMD if missing (fallback to mysql)
+if ! command -v ${MYSQL_CMD} &>/dev/null; then
+    if command -v mysql &>/dev/null; then
+        MYSQL_CMD="mysql"
+    elif command -v mariadb &>/dev/null; then
+        MYSQL_CMD="mariadb"
+    else
+        add_error "No MySQL client binary found"
+    fi
+fi
 
 # Postfix preseeding (Debian/Ubuntu)
 if command -v debconf-set-selections &>/dev/null; then
@@ -460,7 +476,14 @@ if [[ "$APACHE_SERVICE" == "apache2" ]]; then
     CustomLog /var/log/apache2/bmta_access.log combined
 </VirtualHost>
 VHOST
-    [ -d "$APACHE_SITES_DIR" ] && ln -sf ${APACHE_CONF_DIR}/000-bmta.conf ${APACHE_SITES_DIR}/ 2>/dev/null || add_error "Apache symlink failed"
+    # For SUSE, just copy the file; for Debian, symlink it
+    if [ -d "$APACHE_SITES_DIR" ]; then
+        if [[ "$OS_ID" =~ ^(opensuse|sles) ]]; then
+            cp ${APACHE_CONF_DIR}/000-bmta.conf ${APACHE_SITES_DIR}/ || add_error "Apache config copy failed"
+        else
+            ln -sf ${APACHE_CONF_DIR}/000-bmta.conf ${APACHE_SITES_DIR}/ 2>/dev/null || add_error "Apache symlink failed"
+        fi
+    fi
 else
     cat > ${APACHE_CONF_DIR}/bmta.conf <<'VHOST'
 <VirtualHost *:80>
@@ -502,6 +525,8 @@ else
         dnf install -y firewalld && systemctl enable --now firewalld && for p in "${FW_PORTS[@]}"; do firewall-cmd --permanent --add-port=${p}/tcp; done && firewall-cmd --reload
     elif command -v yum &>/dev/null; then
         yum install -y firewalld && systemctl enable --now firewalld && for p in "${FW_PORTS[@]}"; do firewall-cmd --permanent --add-port=${p}/tcp; done && firewall-cmd --reload
+    elif command -v zypper &>/dev/null; then
+        zypper --non-interactive install firewalld && systemctl enable --now firewalld && for p in "${FW_PORTS[@]}"; do firewall-cmd --permanent --add-port=${p}/tcp; done && firewall-cmd --reload
     else
         add_error "No firewall installed; please open ports: ${FW_PORTS[*]}"
     fi
