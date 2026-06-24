@@ -1,6 +1,6 @@
 #!/bin/bash
 #=====================================================================
-# bMTA – Fully Automated Universal Installer (no prompts, collects errors)
+# bMTA – Fully Automated Universal Installer (error‑collecting, firewall autoconfig)
 # Run as root: sudo bash install.sh
 #=====================================================================
 set +e    # Continue even if individual commands fail
@@ -135,7 +135,7 @@ echo -e "${GREEN}  Detected: $OS_PRETTY                    ${NC}"
 echo -e "${GREEN}========================================${NC}"
 
 # ---------- 1. Install system packages ----------
-echo -e "\n${GREEN}[1/8] Installing system packages...${NC}"
+echo -e "\n${GREEN}[1/9] Installing system packages...${NC}"
 eval "$PKG_UPDATE" || add_error "System update failed"
 $PKG_INSTALL $PKG_EXTRA || add_error "Failed to install essential tools"
 
@@ -206,7 +206,7 @@ if command -v debconf-set-selections &>/dev/null; then
 fi
 
 # ---------- 2. Configure PHP ----------
-echo -e "\n${GREEN}[2/8] Configuring PHP...${NC}"
+echo -e "\n${GREEN}[2/9] Configuring PHP...${NC}"
 if [ -z "$php_ver" ]; then
     php_ver=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null) || php_ver="8.2"
 fi
@@ -231,7 +231,7 @@ else
 fi
 
 # ---------- 3. Database ----------
-echo -e "\n${GREEN}[3/8] Setting up database...${NC}"
+echo -e "\n${GREEN}[3/9] Setting up database...${NC}"
 systemctl start ${MYSQL_SERVICE} 2>/dev/null || service ${MYSQL_SERVICE} start 2>/dev/null || add_error "Failed to start ${MYSQL_SERVICE}"
 systemctl enable ${MYSQL_SERVICE} 2>/dev/null || true
 
@@ -250,7 +250,7 @@ else
 fi
 
 # ---------- 4. App config ----------
-echo -e "\n${GREEN}[4/8] Generating application configuration...${NC}"
+echo -e "\n${GREEN}[4/9] Generating application configuration...${NC}"
 mkdir -p /var/www/html/config
 cat > /var/www/html/config/config.php <<EOF
 <?php
@@ -273,7 +273,7 @@ return [
 EOF
 
 # ---------- 5. Postfix ----------
-echo -e "\n${GREEN}[5/8] Configuring Postfix...${NC}"
+echo -e "\n${GREEN}[5/9] Configuring Postfix...${NC}"
 for f in /var/www/html/postfix/main.cf.patch /var/www/html/postfix/mysql_virtual_domains.cf /var/www/html/postfix/mysql_virtual_mailbox_maps.cf /var/www/html/postfix/mysql_virtual_alias_maps.cf; do
     [ ! -f "$f" ] && add_error "Missing Postfix file: $f"
 done
@@ -293,7 +293,7 @@ chmod -R 770 /var/mail/vhosts
 systemctl restart ${POSTFIX_SERVICE} 2>/dev/null || service ${POSTFIX_SERVICE} restart 2>/dev/null || add_error "Failed to restart Postfix"
 
 # ---------- 6. Dovecot ----------
-echo -e "\n${GREEN}[6/8] Configuring Dovecot...${NC}"
+echo -e "\n${GREEN}[6/9] Configuring Dovecot...${NC}"
 for f in /var/www/html/dovecot/dovecot.conf.patch /var/www/html/dovecot/conf.d/10-auth.conf /var/www/html/dovecot/conf.d/auth-sql.conf.ext /var/www/html/dovecot/dovecot-sql.conf.ext; do
     [ ! -f "$f" ] && add_error "Missing Dovecot file: $f"
 done
@@ -308,7 +308,7 @@ chmod -R o-rwx /etc/dovecot
 systemctl restart ${DOVECOT_SERVICE} 2>/dev/null || service ${DOVECOT_SERVICE} restart 2>/dev/null || add_error "Failed to restart Dovecot"
 
 # ---------- 7. Apache / httpd ----------
-echo -e "\n${GREEN}[7/8] Configuring Apache/httpd...${NC}"
+echo -e "\n${GREEN}[7/9] Configuring Apache/httpd...${NC}"
 # Enable rewrite
 if command -v a2enmod &>/dev/null; then a2enmod rewrite || add_error "Failed to enable mod_rewrite"; fi
 
@@ -348,8 +348,67 @@ chcon -R -t httpd_sys_rw_content_t /var/www/html/public/uploads 2>/dev/null || t
 
 systemctl restart ${APACHE_SERVICE} 2>/dev/null || service ${APACHE_SERVICE} restart 2>/dev/null || add_error "Failed to restart Apache"
 
-# ---------- 8. Cron ----------
-echo -e "\n${GREEN}[8/8] Installing cron jobs...${NC}"
+# ---------- 8. Firewall (automatic port opening) ----------
+echo -e "\n${GREEN}[8/9] Configuring firewall...${NC}"
+configure_firewall() {
+    # Firewalld (RHEL/CentOS/Fedora)
+    if command -v firewall-cmd &>/dev/null; then
+        systemctl enable --now firewalld 2>/dev/null || true
+        firewall-cmd --permanent --add-port=80/tcp --add-port=25/tcp --add-port=443/tcp --add-port=587/tcp --add-port=993/tcp 2>/dev/null || true
+        firewall-cmd --reload 2>/dev/null || true
+        echo "    firewalld ports added."
+        return 0
+    fi
+
+    # ufw (Ubuntu/Debian)
+    if command -v ufw &>/dev/null; then
+        ufw --force enable 2>/dev/null || true
+        ufw allow 80/tcp 2>/dev/null
+        ufw allow 25/tcp 2>/dev/null
+        ufw allow 443/tcp 2>/dev/null
+        ufw allow 587/tcp 2>/dev/null
+        ufw allow 993/tcp 2>/dev/null
+        echo "    ufw ports added."
+        return 0
+    fi
+
+    # iptables (legacy, temporary)
+    if command -v iptables &>/dev/null; then
+        iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null
+        iptables -I INPUT -p tcp --dport 25 -j ACCEPT 2>/dev/null
+        iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null
+        iptables -I INPUT -p tcp --dport 587 -j ACCEPT 2>/dev/null
+        iptables -I INPUT -p tcp --dport 993 -j ACCEPT 2>/dev/null
+        echo "    iptables rules added (non‑persistent)."
+        return 0
+    fi
+
+    # No firewall present – install one based on package manager
+    if command -v apt &>/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt install -y ufw 2>/dev/null
+        ufw --force enable 2>/dev/null
+        ufw allow 80/tcp; ufw allow 25/tcp; ufw allow 443/tcp; ufw allow 587/tcp; ufw allow 993/tcp
+        echo "    ufw installed and ports added."
+    elif command -v dnf &>/dev/null; then
+        dnf install -y firewalld 2>/dev/null
+        systemctl enable --now firewalld 2>/dev/null
+        firewall-cmd --permanent --add-port=80/tcp --add-port=25/tcp --add-port=443/tcp --add-port=587/tcp --add-port=993/tcp 2>/dev/null
+        firewall-cmd --reload 2>/dev/null
+        echo "    firewalld installed and ports added."
+    elif command -v yum &>/dev/null; then
+        yum install -y firewalld 2>/dev/null
+        systemctl enable --now firewalld 2>/dev/null
+        firewall-cmd --permanent --add-port=80/tcp --add-port=25/tcp --add-port=443/tcp --add-port=587/tcp --add-port=993/tcp 2>/dev/null
+        firewall-cmd --reload 2>/dev/null
+        echo "    firewalld installed and ports added."
+    else
+        add_error "Could not configure firewall. Please open ports 80,25,443,587,993 manually."
+    fi
+}
+configure_firewall
+
+# ---------- 9. Cron ----------
+echo -e "\n${GREEN}[9/9] Installing cron jobs...${NC}"
 mkdir -p /var/log/bmta
 (crontab -l 2>/dev/null | grep -v "process_queue\|process_bounces"; 
  echo "* * * * * /usr/bin/php /var/www/html/cron/process_queue.php >> /var/log/bmta/queue.log 2>&1";
@@ -373,5 +432,5 @@ fi
 echo ""
 echo -e "Open ${YELLOW}${APP_URL}${NC} to create the admin account."
 echo -e "Database: ${DB_NAME} | User: ${DB_USER} | Pass: ${DB_PASS}"
-echo -e "Ensure firewall allows ports 25,80,443,993."
+echo -e "Firewall ports 25,80,443,587,993 have been automatically opened."
 echo -e "${RED}Set DNS records as shown in the domain manager.${NC}"
